@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>쿠키런 Phase 1 — MVP</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      gap: 8px;
+    }
+    canvas { display: block; border: 3px solid #4a4a8a; border-radius: 6px; }
+    p { color: #aaa; font: 13px sans-serif; }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<p>스페이스 / ↑ / 클릭 : 점프 &nbsp;|&nbsp; 모바일 : 탭</p>
+
+<script>
+// ═══════════════════════════════════════════════
+// CONFIG — 모든 수치는 여기서만 조정
+// ═══════════════════════════════════════════════
+const CONFIG = {
+  // 화면
+  width:              800,
+  height:             400,
+
+  // 물리
+  gravity:            0.8,    // 중력 (px/frame² @60fps)
+  jumpPower:         -15,     // 점프 초기 속도 (음수 = 위로)
+
+  // 스크롤
+  baseScrollSpeed:    6,      // 스크롤 속도 (px/frame @60fps)
+
+  // 레이아웃
+  groundRatio:        0.82,   // groundY = height × groundRatio
+  playerXRatio:       0.22,   // playerX = width × playerXRatio (x 고정)
+
+  // 캐릭터 크기
+  playerW:            36,
+  playerH:            48,
+
+  // 장애물 (바닥 가시 1종)
+  obstacleW:          28,
+  obstacleH:          42,
+  obstacleMinGap:     400,    // 연속 장애물 최소 간격 (px)
+
+  // 점수
+  distanceScorePerPx: 0.05,
+
+  // 충돌
+  hitboxPadding:      5,
+
+  // 지면
+  groundThickness:    6,
+
+  // 색상
+  bgColor:       '#87CEEB',
+  bgBottomColor: '#B0E2FF',
+  groundColor:   '#5D4037',
+  grassColor:    '#4CAF50',
+  playerColor:   '#FF6B35',
+  playerLegColor:'#D4500A',
+  obsColor:      '#C0392B',
+  obsTopColor:   '#E74C3C',
+  hudColor:      '#1A237E',
+  overlayBg:     'rgba(0,0,0,0.55)',
+  white:         '#FFFFFF',
+  yellow:        '#FFEB3B',
+};
+
+// ═══════════════════════════════════════════════
+// 캔버스 & 파생 상수
+// ═══════════════════════════════════════════════
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+canvas.width  = CONFIG.width;
+canvas.height = CONFIG.height;
+
+const GROUND_Y = Math.floor(CONFIG.height * CONFIG.groundRatio);
+const PLAYER_X = Math.floor(CONFIG.width  * CONFIG.playerXRatio);
+const FRAME_MS = 1000 / 60;
+
+// ═══════════════════════════════════════════════
+// 게임 상태
+// ═══════════════════════════════════════════════
+let state, player, obstacles, lastTimestamp;
+
+function resetGame() {
+  state = { mode: 'READY', score: 0, distance: 0 };
+  player = {
+    x:        PLAYER_X,
+    y:        GROUND_Y - CONFIG.playerH,
+    vy:       0,
+    w:        CONFIG.playerW,
+    h:        CONFIG.playerH,
+    onGround: true,
+    legPhase: 0,
+  };
+  obstacles     = [];
+  lastTimestamp = null;
+}
+
+function startGame() { state.mode = 'PLAYING'; }
+function gameOver()  { state.mode = 'GAMEOVER'; }
+
+// ═══════════════════════════════════════════════
+// 입력
+// ═══════════════════════════════════════════════
+function handleInput() {
+  if (state.mode === 'READY' || state.mode === 'GAMEOVER') {
+    resetGame(); startGame(); return;
+  }
+  if (state.mode === 'PLAYING' && player.onGround) {
+    player.vy       = CONFIG.jumpPower;
+    player.onGround = false;
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); handleInput(); }
+});
+canvas.addEventListener('click',      () => handleInput());
+canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handleInput(); }, { passive: false });
+
+// ═══════════════════════════════════════════════
+// 장애물 스폰
+// ═══════════════════════════════════════════════
+function spawnObstacles() {
+  const rightEdge = obstacles.length > 0
+    ? Math.max(...obstacles.map(o => o.x + o.w))
+    : -Infinity;
+  if (CONFIG.width - rightEdge < CONFIG.obstacleMinGap) return;
+  obstacles.push({
+    x: CONFIG.width,
+    y: GROUND_Y - CONFIG.obstacleH,
+    w: CONFIG.obstacleW,
+    h: CONFIG.obstacleH,
+  });
+}
+
+// ═══════════════════════════════════════════════
+// 충돌 판정 (AABB)
+// ═══════════════════════════════════════════════
+function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+function checkCollisions() {
+  const pad = CONFIG.hitboxPadding;
+  const px = player.x + pad, py = player.y + pad;
+  const pw = player.w - pad * 2, ph = player.h - pad * 2;
+  for (const o of obstacles) {
+    if (rectsOverlap(px, py, pw, ph, o.x + pad, o.y + pad, o.w - pad * 2, o.h - pad * 2)) {
+      gameOver(); return;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 업데이트
+// ═══════════════════════════════════════════════
+function update(dt) {
+  if (state.mode !== 'PLAYING') return;
+  const s = dt / FRAME_MS;
+
+  // 중력 + 이동
+  player.vy += CONFIG.gravity * s;
+  player.y  += player.vy * s;
+
+  // 착지
+  const groundSurface = GROUND_Y - player.h;
+  if (player.y >= groundSurface) {
+    player.y        = groundSurface;
+    player.vy       = 0;
+    player.onGround = true;
+  } else {
+    player.onGround = false;
+  }
+
+  if (player.onGround) player.legPhase += s;
+
+  // 장애물 이동 + 제거
+  const speed = CONFIG.baseScrollSpeed * s;
+  for (const o of obstacles) o.x -= speed;
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    if (obstacles[i].x + obstacles[i].w < 0) obstacles.splice(i, 1);
+  }
+
+  spawnObstacles();
+  checkCollisions();
+
+  if (state.mode === 'PLAYING') {
+    state.distance += speed;
+    state.score     = Math.floor(state.distance * CONFIG.distanceScorePerPx);
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 렌더
+// ═══════════════════════════════════════════════
+function render() {
+  const W = CONFIG.width, H = CONFIG.height;
+
+  // 배경
+  const grad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+  grad.addColorStop(0, CONFIG.bgColor);
+  grad.addColorStop(1, CONFIG.bgBottomColor);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, GROUND_Y);
+
+  // 지면
+  ctx.fillStyle = CONFIG.groundColor;
+  ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+  ctx.fillStyle = CONFIG.grassColor;
+  ctx.fillRect(0, GROUND_Y, W, CONFIG.groundThickness);
+
+  // 장애물
+  for (const o of obstacles) {
+    ctx.fillStyle = CONFIG.obsColor;
+    ctx.fillRect(o.x, o.y, o.w, o.h);
+    ctx.fillStyle = CONFIG.obsTopColor;
+    ctx.fillRect(o.x, o.y, o.w, 5);
+    ctx.fillStyle = CONFIG.obsColor;
+    const tw = o.w / 2;
+    for (let i = 0; i < 2; i++) {
+      const tx = o.x + tw * i;
+      ctx.beginPath();
+      ctx.moveTo(tx, o.y); ctx.lineTo(tx + tw/2, o.y - 16); ctx.lineTo(tx + tw, o.y);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+
+  // 캐릭터
+  drawPlayer();
+
+  // HUD
+  ctx.fillStyle = CONFIG.hudColor;
+  ctx.font      = 'bold 20px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText(`⭐ ${state.score}`, W - 14, 28);
+  ctx.textAlign = 'left';
+
+  // 오버레이
+  if (state.mode === 'READY') {
+    drawOverlay('쿠키런 Phase 1', ['스페이스 / 클릭으로 시작']);
+  } else if (state.mode === 'GAMEOVER') {
+    drawOverlay('GAME OVER', [`점수: ${state.score}`, '스페이스 / 클릭으로 재시작']);
+  }
+}
+
+function drawPlayer() {
+  const { x, y, w, h, onGround, legPhase } = player;
+  const swing = onGround ? Math.sin(legPhase * 0.45) * 5 : 0;
+
+  ctx.fillStyle = CONFIG.playerLegColor;
+  ctx.fillRect(x + 5,      y + h, 11, 8 + swing);
+  ctx.fillRect(x + w - 16, y + h, 11, 8 - swing);
+
+  ctx.fillStyle = CONFIG.playerColor;
+  ctx.fillRect(x, y, w, h);
+
+  ctx.fillStyle = CONFIG.white;
+  ctx.fillRect(x + w - 14, y + 10, 9, 9);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(x + w - 12, y + 12, 5, 5);
+  ctx.fillStyle = CONFIG.white;
+  ctx.fillRect(x + w - 11, y + 13, 2, 2);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(x + w - 13, y + 24, 8, 2);
+
+  ctx.fillStyle = '#FF8C00';
+  ctx.fillRect(x,         y + 6, 5, 10);
+  ctx.fillRect(x + w - 5, y + 6, 5, 10);
+}
+
+function drawOverlay(title, lines) {
+  const W = CONFIG.width, H = CONFIG.height;
+  ctx.fillStyle = CONFIG.overlayBg;
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = CONFIG.white;
+  ctx.font      = 'bold 44px sans-serif';
+  ctx.fillText(title, W / 2, H / 2 - 28);
+  ctx.fillStyle = CONFIG.yellow;
+  ctx.font      = '17px sans-serif';
+  lines.forEach((line, i) => ctx.fillText(line, W / 2, H / 2 + 16 + i * 26));
+  ctx.textAlign = 'left';
+}
+
+// ═══════════════════════════════════════════════
+// 게임 루프
+// ═══════════════════════════════════════════════
+function loop(timestamp) {
+  if (lastTimestamp === null) lastTimestamp = timestamp;
+  const dt      = Math.min(timestamp - lastTimestamp, 50);
+  lastTimestamp = timestamp;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+resetGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

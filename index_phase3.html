@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>쿠키런 Phase 3 — HP·아이템·난이도</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      gap: 8px;
+    }
+    canvas { display: block; border: 3px solid #4a4a8a; border-radius: 6px; }
+    #ui { display: flex; align-items: center; gap: 16px; }
+    #ui p { color: #aaa; font: 13px sans-serif; }
+    #slideBtn {
+      background: #4a3a8a; color: #fff;
+      border: 2px solid #7a5aca; border-radius: 8px;
+      padding: 8px 22px; font: bold 14px sans-serif;
+      cursor: pointer; user-select: none; -webkit-user-select: none; touch-action: none;
+    }
+    #slideBtn.active { background: #7a5aca; }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<div id="ui">
+  <p>스페이스/↑: 점프(더블점프) &nbsp; ↓/버튼: 슬라이드</p>
+  <button id="slideBtn">슬라이드 ↓</button>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════
+// CONFIG — 모든 수치는 여기서만 조정
+// ═══════════════════════════════════════════════
+const CONFIG = {
+  // 화면
+  width:              800,
+  height:             400,
+
+  // 물리
+  gravity:            0.8,
+  jumpPower:         -15,
+  doubleJumpPower:   -13,
+
+  // 슬라이드
+  slideH:             22,
+
+  // 스크롤 & 난이도
+  baseScrollSpeed:    6,       // 시작 속도 (px/frame @60fps)
+  speedRampPerSec:    0.04,    // 초당 속도 증가량
+  maxScrollSpeed:     14,      // 최대 속도 상한
+  obstacleMinGap:     420,     // 시작 장애물 간격 (px)
+  gapRampPerSec:      2.0,     // 초당 간격 감소량 (px/s)
+  minObstacleGap:     260,     // 장애물 간격 하한
+
+  // 레이아웃
+  groundRatio:        0.82,
+  playerXRatio:       0.22,
+
+  // 캐릭터
+  playerW:            36,
+  playerH:            48,
+
+  // 장애물 — 바닥형
+  groundObsW:         28,
+  groundObsH:         42,
+
+  // 장애물 — 공중형
+  airObsW:            58,
+  airObsH:            28,
+
+  // 장애물 — 구덩이
+  pitMinW:            100,
+  pitMaxW:            150,
+
+  // 장애물 스폰 가중치
+  spawnWeightGround:  4,
+  spawnWeightAir:     3,
+  spawnWeightPit:     3,
+
+  // HP & 무적
+  maxHP:              3,
+  invincibleMs:       1800,    // 피격 후 무적 시간 (ms)
+  damageFlashMs:      300,     // 화면 붉게 번쩍이는 시간 (ms)
+
+  // 아이템 — 젤리
+  jellyR:             9,       // 젤리 반지름
+  jellyScore:         10,      // 젤리 1개당 점수
+  jellyLineCount:     5,       // 한 줄 젤리 개수
+  jellySpacing:       28,      // 젤리 간격
+  arcPeakHeight:      70,      // 젤리 아크 최고 높이 (px, 지면 위)
+  itemMinGap:         280,     // 아이템 줄 최소 간격 (px)
+
+  // 아이템 — 코인
+  coinR:              8,
+  coinValue:          1,
+
+  // 점수
+  distanceScorePerPx: 0.05,
+
+  // 충돌
+  hitboxPadding:      5,
+
+  // 지면
+  groundThickness:    6,
+
+  // 색상
+  bgColor:         '#87CEEB',
+  bgBottomColor:   '#B0E2FF',
+  groundColor:     '#5D4037',
+  grassColor:      '#4CAF50',
+  pitColor:        '#0d0d1a',
+  pitEdgeColor:    '#2a1505',
+  playerColor:     '#FF6B35',
+  playerSlideColor:'#FF9A60',
+  playerLegColor:  '#D4500A',
+  groundObsColor:  '#C0392B',
+  groundObsTop:    '#E74C3C',
+  airObsColor:     '#6C3483',
+  airObsAccent:    '#9B59B6',
+  jellyColor:      '#FF69B4',
+  jellyShine:      '#FFB6D9',
+  coinColor:       '#FFD700',
+  coinEdge:        '#FFA500',
+  hpColor:         '#E74C3C',
+  hpEmptyColor:    '#555',
+  hudColor:        '#1A237E',
+  overlayBg:       'rgba(0,0,0,0.58)',
+  white:           '#FFFFFF',
+  yellow:          '#FFEB3B',
+  gold:            '#FFD700',
+};
+
+// ═══════════════════════════════════════════════
+// 캔버스 & 파생 상수
+// ═══════════════════════════════════════════════
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+canvas.width  = CONFIG.width;
+canvas.height = CONFIG.height;
+
+const GROUND_Y = Math.floor(CONFIG.height * CONFIG.groundRatio);
+const PLAYER_X = Math.floor(CONFIG.width  * CONFIG.playerXRatio);
+const FRAME_MS = 1000 / 60;
+
+// ═══════════════════════════════════════════════
+// 게임 상태
+// ═══════════════════════════════════════════════
+let state, player, obstacles, items, lastTimestamp;
+let slideKeyHeld     = false;
+let damageFlashTimer = 0;
+
+function resetGame() {
+  state = {
+    mode:     'READY',
+    score:    0,
+    distance: 0,
+    hp:       CONFIG.maxHP,
+    coins:    0,
+    elapsed:  0,
+    speed:    CONFIG.baseScrollSpeed,
+  };
+  player = {
+    x:         PLAYER_X,
+    y:         GROUND_Y - CONFIG.playerH,
+    vy:        0,
+    w:         CONFIG.playerW,
+    h:         CONFIG.playerH,
+    onGround:  true,
+    sliding:   false,
+    jumpsLeft: 2,
+    legPhase:  0,
+    invincible: 0,
+  };
+  obstacles        = [];
+  items            = [];
+  lastTimestamp    = null;
+  slideKeyHeld     = false;
+  damageFlashTimer = 0;
+  document.getElementById('slideBtn').classList.remove('active');
+}
+
+function startGame() { state.mode = 'PLAYING'; }
+function gameOver()  { state.mode = 'GAMEOVER'; }
+
+// ═══════════════════════════════════════════════
+// 점프 / 슬라이드
+// ═══════════════════════════════════════════════
+function doJump() {
+  if (state.mode === 'READY' || state.mode === 'GAMEOVER') {
+    resetGame(); startGame(); return;
+  }
+  if (state.mode !== 'PLAYING') return;
+  if (player.jumpsLeft > 0) {
+    const power     = player.jumpsLeft === 2 ? CONFIG.jumpPower : CONFIG.doubleJumpPower;
+    player.vy       = power;
+    player.onGround = false;
+    player.sliding  = false;
+    slideKeyHeld    = false;
+    document.getElementById('slideBtn').classList.remove('active');
+    player.jumpsLeft--;
+  }
+}
+
+function startSlide() {
+  if (state.mode !== 'PLAYING') return;
+  slideKeyHeld = true;
+  document.getElementById('slideBtn').classList.add('active');
+}
+
+function stopSlide() {
+  slideKeyHeld = false;
+  document.getElementById('slideBtn').classList.remove('active');
+}
+
+// ═══════════════════════════════════════════════
+// 입력
+// ═══════════════════════════════════════════════
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); doJump(); }
+  if (e.code === 'ArrowDown')                     { e.preventDefault(); startSlide(); }
+});
+document.addEventListener('keyup', (e) => {
+  if (e.code === 'ArrowDown') stopSlide();
+});
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const rect  = canvas.getBoundingClientRect();
+  const ratio = (e.touches[0].clientY - rect.top) / rect.height;
+  if (ratio < 0.7) doJump(); else startSlide();
+}, { passive: false });
+canvas.addEventListener('touchend', (e) => { e.preventDefault(); stopSlide(); }, { passive: false });
+canvas.addEventListener('click', () => doJump());
+
+const slideBtn = document.getElementById('slideBtn');
+slideBtn.addEventListener('mousedown',  () => startSlide());
+slideBtn.addEventListener('mouseup',    () => stopSlide());
+slideBtn.addEventListener('mouseleave', () => stopSlide());
+slideBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startSlide(); }, { passive: false });
+slideBtn.addEventListener('touchend',   (e) => { e.preventDefault(); stopSlide();  }, { passive: false });
+
+// ═══════════════════════════════════════════════
+// 장애물 스폰
+// ═══════════════════════════════════════════════
+function airObsY() {
+  return GROUND_Y - CONFIG.slideH - CONFIG.hitboxPadding * 2 - CONFIG.airObsH;
+}
+
+function pickObsType() {
+  const total = CONFIG.spawnWeightGround + CONFIG.spawnWeightAir + CONFIG.spawnWeightPit;
+  const r     = Math.random() * total;
+  if (r < CONFIG.spawnWeightGround) return 'ground';
+  if (r < CONFIG.spawnWeightGround + CONFIG.spawnWeightAir) return 'air';
+  return 'pit';
+}
+
+function currentObstacleGap() {
+  return Math.max(
+    CONFIG.obstacleMinGap - state.elapsed * CONFIG.gapRampPerSec,
+    CONFIG.minObstacleGap
+  );
+}
+
+function spawnObstacles() {
+  const rightEdge = obstacles.length > 0
+    ? Math.max(...obstacles.map(o => o.x + o.w))
+    : -Infinity;
+  if (CONFIG.width - rightEdge < currentObstacleGap()) return;
+
+  const type = pickObsType();
+  if (type === 'ground') {
+    obstacles.push({ type: 'ground', x: CONFIG.width,
+      y: GROUND_Y - CONFIG.groundObsH, w: CONFIG.groundObsW, h: CONFIG.groundObsH });
+  } else if (type === 'air') {
+    obstacles.push({ type: 'air', x: CONFIG.width,
+      y: airObsY(), w: CONFIG.airObsW, h: CONFIG.airObsH });
+  } else {
+    const pitW = CONFIG.pitMinW + Math.random() * (CONFIG.pitMaxW - CONFIG.pitMinW);
+    obstacles.push({ type: 'pit', x: CONFIG.width,
+      y: GROUND_Y, w: Math.floor(pitW), h: CONFIG.height - GROUND_Y });
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 아이템 스폰
+// ═══════════════════════════════════════════════
+function spawnItems() {
+  const living    = items.filter(i => !i.collected);
+  const rightEdge = living.length > 0
+    ? Math.max(...living.map(i => i.x + i.r))
+    : -Infinity;
+  if (CONFIG.width - rightEdge < CONFIG.itemMinGap) return;
+
+  const isCoin = Math.random() < 0.22;
+  const isArc  = Math.random() < 0.45;
+  const type   = isCoin ? 'coin' : 'jelly';
+  const r      = type === 'coin' ? CONFIG.coinR : CONFIG.jellyR;
+  const n      = CONFIG.jellyLineCount;
+  const baseY  = GROUND_Y - r;
+
+  for (let i = 0; i < n; i++) {
+    const x = CONFIG.width + i * CONFIG.jellySpacing;
+    const t = i / (n - 1);
+    const y = isArc ? baseY - CONFIG.arcPeakHeight * Math.sin(Math.PI * t) : baseY;
+    items.push({ type, x, y, r, collected: false });
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 충돌
+// ═══════════════════════════════════════════════
+function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+function isOverPit(px, pw) {
+  const L = px + CONFIG.hitboxPadding;
+  const R = px + pw - CONFIG.hitboxPadding;
+  for (const o of obstacles) {
+    if (o.type === 'pit' && L < o.x + o.w && R > o.x) return true;
+  }
+  return false;
+}
+
+function takeDamage() {
+  if (player.invincible > 0) return false;
+  state.hp--;
+  player.invincible = CONFIG.invincibleMs;
+  damageFlashTimer  = CONFIG.damageFlashMs;
+  if (state.hp <= 0) { gameOver(); return true; }
+  return false;
+}
+
+function checkCollisions() {
+  const pad = CONFIG.hitboxPadding;
+  const px = player.x + pad, py = player.y + pad;
+  const pw = player.w - pad * 2, ph = player.h - pad * 2;
+  for (const o of obstacles) {
+    if (o.type === 'pit') continue;
+    if (rectsOverlap(px, py, pw, ph, o.x + pad, o.y + pad, o.w - pad * 2, o.h - pad * 2)) {
+      takeDamage(); return;
+    }
+  }
+}
+
+function checkItemCollisions() {
+  for (const item of items) {
+    if (item.collected) continue;
+    if (item.x + item.r > player.x &&
+        item.x - item.r < player.x + player.w &&
+        item.y + item.r > player.y &&
+        item.y - item.r < player.y + player.h) {
+      item.collected = true;
+      if (item.type === 'jelly') state.score += CONFIG.jellyScore;
+      else                        state.coins += CONFIG.coinValue;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 업데이트
+// ═══════════════════════════════════════════════
+function update(dt) {
+  if (state.mode !== 'PLAYING') return;
+  const s = dt / FRAME_MS;
+
+  state.elapsed += dt / 1000;
+  state.speed    = Math.min(
+    CONFIG.baseScrollSpeed + state.elapsed * CONFIG.speedRampPerSec,
+    CONFIG.maxScrollSpeed
+  );
+
+  if (player.invincible > 0) player.invincible = Math.max(0, player.invincible - dt);
+  if (damageFlashTimer > 0)  damageFlashTimer  = Math.max(0, damageFlashTimer  - dt);
+
+  player.sliding = slideKeyHeld && player.onGround;
+  player.h       = player.sliding ? CONFIG.slideH : CONFIG.playerH;
+
+  const groundSurface = GROUND_Y - player.h;
+
+  if (player.onGround) {
+    if (isOverPit(player.x, player.w)) {
+      player.onGround = false;
+      player.vy       = 0;
+    } else {
+      player.y  = groundSurface;
+      player.vy = 0;
+    }
+  }
+
+  if (!player.onGround) {
+    player.vy += CONFIG.gravity * s;
+    player.y  += player.vy * s;
+
+    if (player.y > GROUND_Y + 30) {
+      const dead = takeDamage();
+      if (dead) return;
+      player.y        = GROUND_Y - player.h;
+      player.vy       = 0;
+      player.onGround = true;
+      player.jumpsLeft = 2;
+    } else if (player.y >= groundSurface && !isOverPit(player.x, player.w)) {
+      player.y        = groundSurface;
+      player.vy       = 0;
+      player.onGround = true;
+      player.jumpsLeft = 2;
+    }
+  }
+
+  if (player.onGround && !player.sliding) player.legPhase += s;
+
+  const speed = state.speed * s;
+  for (const o of obstacles) o.x -= speed;
+  for (const i of items)     i.x -= speed;
+
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    if (obstacles[i].x + obstacles[i].w < 0) obstacles.splice(i, 1);
+  }
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].x + items[i].r < 0) items.splice(i, 1);
+  }
+
+  spawnObstacles();
+  spawnItems();
+  checkCollisions();
+  checkItemCollisions();
+
+  if (state.mode === 'PLAYING') {
+    state.distance += speed;
+    state.score    += speed * CONFIG.distanceScorePerPx;
+    state.score     = Math.floor(state.score);
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 렌더
+// ═══════════════════════════════════════════════
+function render() {
+  const W = CONFIG.width, H = CONFIG.height;
+
+  const grad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+  grad.addColorStop(0, CONFIG.bgColor);
+  grad.addColorStop(1, CONFIG.bgBottomColor);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, GROUND_Y);
+
+  drawGround();
+  drawItems();
+  for (const o of obstacles) drawObstacle(o);
+  drawPlayer();
+
+  if (damageFlashTimer > 0) {
+    ctx.fillStyle = `rgba(220,0,0,${0.38 * (damageFlashTimer / CONFIG.damageFlashMs)})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  drawHUD();
+
+  if (state.mode === 'READY') {
+    drawOverlay('쿠키런 Phase 3', [
+      '스페이스/↑ : 점프 · 더블점프   ↓ : 슬라이드',
+      '빨강 가시 : 점프   보라 블록 : 슬라이드   구덩이 : 점프',
+    ]);
+  } else if (state.mode === 'GAMEOVER') {
+    drawOverlay('GAME OVER', [
+      `점수: ${state.score}   |   코인: ${state.coins}`,
+      '스페이스 / 클릭으로 재시작',
+    ]);
+  }
+}
+
+function drawGround() {
+  const W = CONFIG.width, H = CONFIG.height;
+  const pits = obstacles.filter(o => o.type === 'pit');
+
+  ctx.fillStyle = CONFIG.groundColor;
+  ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+  ctx.fillStyle = CONFIG.grassColor;
+  ctx.fillRect(0, GROUND_Y, W, CONFIG.groundThickness);
+
+  for (const pit of pits) {
+    ctx.fillStyle = CONFIG.pitColor;
+    ctx.fillRect(pit.x, GROUND_Y, pit.w, H - GROUND_Y);
+    ctx.fillStyle = CONFIG.pitEdgeColor;
+    ctx.fillRect(pit.x,             GROUND_Y, 5, H - GROUND_Y);
+    ctx.fillRect(pit.x + pit.w - 5, GROUND_Y, 5, H - GROUND_Y);
+    ctx.fillStyle = CONFIG.grassColor;
+    ctx.fillRect(pit.x - 3,         GROUND_Y, 5, CONFIG.groundThickness);
+    ctx.fillRect(pit.x + pit.w - 2, GROUND_Y, 5, CONFIG.groundThickness);
+  }
+}
+
+function drawItems() {
+  for (const item of items) {
+    if (item.collected) continue;
+    const { x, y, r, type } = item;
+    if (type === 'jelly') {
+      ctx.fillStyle = CONFIG.jellyColor;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = CONFIG.jellyShine;
+      ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.3, r * 0.35, 0, Math.PI * 2); ctx.fill();
+    } else {
+      ctx.fillStyle = CONFIG.coinColor;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = CONFIG.coinEdge; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle   = CONFIG.coinEdge;
+      ctx.font        = `bold ${r + 2}px sans-serif`;
+      ctx.textAlign   = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('C', x, y + 1);
+      ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+    }
+  }
+}
+
+function drawObstacle(o) {
+  if (o.type === 'ground') {
+    ctx.fillStyle = CONFIG.groundObsColor;
+    ctx.fillRect(o.x, o.y, o.w, o.h);
+    ctx.fillStyle = CONFIG.groundObsTop;
+    ctx.fillRect(o.x, o.y, o.w, 5);
+    ctx.fillStyle = CONFIG.groundObsColor;
+    const tw = o.w / 2;
+    for (let i = 0; i < 2; i++) {
+      const tx = o.x + tw * i;
+      ctx.beginPath();
+      ctx.moveTo(tx, o.y); ctx.lineTo(tx + tw/2, o.y - 16); ctx.lineTo(tx + tw, o.y);
+      ctx.closePath(); ctx.fill();
+    }
+  } else if (o.type === 'air') {
+    ctx.fillStyle = CONFIG.airObsColor;
+    ctx.fillRect(o.x, o.y, o.w, o.h);
+    ctx.fillStyle = CONFIG.airObsAccent;
+    ctx.fillRect(o.x, o.y + o.h - 6, o.w, 6);
+    ctx.fillStyle = 'rgba(255,255,255,0.14)';
+    ctx.fillRect(o.x + 4, o.y + 4, o.w - 8, o.h / 2 - 4);
+    ctx.fillStyle = CONFIG.white; ctx.font = 'bold 13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('↓', o.x + o.w / 2, o.y + o.h / 2 + 5);
+    ctx.textAlign = 'left';
+  }
+}
+
+function drawPlayer() {
+  if (player.invincible > 0 && Math.floor(player.invincible / 150) % 2 === 1) return;
+
+  const { x, y, w, h, onGround, sliding, legPhase, jumpsLeft } = player;
+
+  if (sliding) {
+    ctx.fillStyle = CONFIG.playerSlideColor;
+    ctx.fillRect(x - 6, y, w + 12, h);
+    ctx.fillStyle = CONFIG.white;
+    ctx.fillRect(x + w - 8, y + 3, 8, 8);
+    ctx.fillStyle = '#222';
+    ctx.fillRect(x + w - 7, y + 4, 5, 5);
+    ctx.fillStyle = CONFIG.white;
+    ctx.fillRect(x + w - 6, y + 5, 2, 2);
+  } else {
+    const swing = onGround ? Math.sin(legPhase * 0.45) * 5 : 0;
+    ctx.fillStyle = CONFIG.playerLegColor;
+    ctx.fillRect(x + 5,      y + h, 11, 8 + swing);
+    ctx.fillRect(x + w - 16, y + h, 11, 8 - swing);
+    ctx.fillStyle = CONFIG.playerColor;
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = CONFIG.white;
+    ctx.fillRect(x + w - 14, y + 10, 9, 9);
+    ctx.fillStyle = '#222';
+    ctx.fillRect(x + w - 12, y + 12, 5, 5);
+    ctx.fillStyle = CONFIG.white;
+    ctx.fillRect(x + w - 11, y + 13, 2, 2);
+    ctx.fillStyle = '#222';
+    ctx.fillRect(x + w - 13, y + 24, 8, 2);
+    ctx.fillStyle = '#FF8C00';
+    ctx.fillRect(x,         y + 6, 5, 10);
+    ctx.fillRect(x + w - 5, y + 6, 5, 10);
+  }
+
+  if (!onGround) {
+    for (let i = 0; i < 2; i++) {
+      ctx.fillStyle = i < jumpsLeft ? CONFIG.gold : 'rgba(255,255,255,0.28)';
+      ctx.beginPath();
+      ctx.arc(x + w/2 - 7 + i * 14, y - 11, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawHUD() {
+  ctx.font = '22px sans-serif';
+  for (let i = 0; i < CONFIG.maxHP; i++) {
+    ctx.fillStyle = i < state.hp ? CONFIG.hpColor : CONFIG.hpEmptyColor;
+    ctx.fillText('♥', 10 + i * 26, 28);
+  }
+  ctx.fillStyle = CONFIG.coinColor;
+  ctx.font      = 'bold 17px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`🪙 ${state.coins}`, CONFIG.width / 2, 26);
+  ctx.fillStyle = CONFIG.hudColor;
+  ctx.font      = 'bold 20px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText(`⭐ ${state.score}`, CONFIG.width - 14, 28);
+  const level = Math.floor((state.speed - CONFIG.baseScrollSpeed) / CONFIG.speedRampPerSec / 10) + 1;
+  ctx.fillStyle = 'rgba(30,30,80,0.55)';
+  ctx.font      = '12px sans-serif';
+  ctx.fillText(`Lv.${level}  ${state.speed.toFixed(1)}x`, CONFIG.width - 8, CONFIG.height - 6);
+  ctx.textAlign = 'left';
+}
+
+function drawOverlay(title, lines) {
+  const W = CONFIG.width, H = CONFIG.height;
+  ctx.fillStyle = CONFIG.overlayBg;
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = CONFIG.white;
+  ctx.font      = 'bold 44px sans-serif';
+  ctx.fillText(title, W / 2, H / 2 - 28);
+  ctx.fillStyle = CONFIG.yellow;
+  ctx.font      = '16px sans-serif';
+  lines.forEach((line, i) => ctx.fillText(line, W / 2, H / 2 + 16 + i * 26));
+  ctx.textAlign = 'left';
+}
+
+// ═══════════════════════════════════════════════
+// 게임 루프
+// ═══════════════════════════════════════════════
+function loop(timestamp) {
+  if (lastTimestamp === null) lastTimestamp = timestamp;
+  const dt      = Math.min(timestamp - lastTimestamp, 50);
+  lastTimestamp = timestamp;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+resetGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
