@@ -1,0 +1,14 @@
+{
+  "name": "쿠키런 스타일 게임",
+  "short_name": "쿠키런",
+  "description": "HTML5 엔드리스 러너 게임",
+  "start_url": "./index.html",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#1a1a2e",
+  "theme_color": "#1a1a2e",
+  "icons": [
+    { "src": "image/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "image/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
