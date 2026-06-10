@@ -455,9 +455,9 @@ pikachuSlideImg.onload = () => {
 
 // ── 망나뇽 개별 스프라이트 ──
 const DRAGONITE_MOTION = {
-  run:   [1,2,3,4,5,6,7,8],
-  fly:   [9,10,11,12,13,14,15,16],
-  slide: [26,27,28,29,30,31]
+  run:   [4200,4201,4202,4203,4204,4205,4206,4207,4208,4209,4210,4211,4212,4213,4214,4215],
+  fly:   [4216,4217,4218],
+  slide: [4219,4220,4221]
 };
 const dragoniteFrames = {};
 let dragoniteLoaded = false;
@@ -468,7 +468,7 @@ const _dragoniteTotal = [].concat(
 
 function _loadDragoniteSprite(n) {
   const img = new Image();
-  img.src = 'image/망나뇽_스프라이트/sprite' + n + '.png';
+  img.src = 'image/망나뇽_스프라이트2/sprite' + n + '.png';
   img.onload = () => {
     const oc = document.createElement('canvas');
     oc.width = img.naturalWidth; oc.height = img.naturalHeight;
@@ -1285,47 +1285,48 @@ function drawPlayer() {
 
   if (selectedChar === 'dragonite' && dragoniteLoaded) {
     const dw = w + 60, dh = h + 56;
+    const powerScale = state.powerup > 0 ? 1.3 : 1.0;
 
     if (sliding) {
-      // 슬라이딩: sprite26~31 8fps 순환
+      // 슬라이딩: sprite4219~4221 8fps 순환 (납작한 수평 자세)
       const frames = DRAGONITE_MOTION.slide;
       const fIdx = Math.floor(state.elapsed * 8) % frames.length;
       const fc = dragoniteFrames[frames[fIdx]];
-      if (fc) ctx.drawImage(fc, 0, 0, fc.width, fc.height,
-        x - 30, y - 16, w + 90, h + 24);
+      if (fc) {
+        const sw = (w + 110) * 0.9 * powerScale;
+        const sh = (h + 32) * 0.9 * powerScale;
+        const sh0 = (h + 32) * 0.9;
+        ctx.drawImage(fc, 0, 0, fc.width, fc.height, x - 50, y - 10 + sh0 - sh, sw, sh);
+      }
 
     } else if (!onGround) {
-      // 날기: sprite9~16 12fps 순환 + 날개 박동 + 속도 기울기
+      // 날기: sprite4216~4218 12fps 순환 + 속도 기울기
       const frames = DRAGONITE_MOTION.fly;
       const fIdx = Math.floor(state.elapsed * 12) % frames.length;
       const fc = dragoniteFrames[frames[fIdx]];
       if (fc) {
-        const wingBeat = 1 + Math.abs(Math.sin(state.elapsed * Math.PI * 8)) * 0.10;
-        const floatY   = Math.sin(state.elapsed * 5) * 4;
-        const tilt     = player.vy * 0.007;
-        const cx = x - 26 + dw / 2;
-        const cy = y - 40 + dh / 2 + floatY;
+        const fw = dw * 0.75 * powerScale, fh = dh * 0.75 * powerScale;
+        const floatY = Math.sin(state.elapsed * 5) * 4;
+        const tilt   = player.vy * 0.006;
+        const cx = x - 26 + fw / 2;
+        const cy = y - 30 + fh / 2 + floatY;
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(tilt);
-        ctx.scale(wingBeat, 2 - wingBeat);
-        ctx.drawImage(fc, 0, 0, fc.width, fc.height, -dw/2, -dh/2, dw, dh);
+        ctx.drawImage(fc, 0, 0, fc.width, fc.height, -fw/2, -fh/2, fw, fh);
         ctx.restore();
       }
 
     } else {
-      // 달리기: sprite1~8 12fps 순환 + 상하 바운스, 좌우 반전
+      // 달리기: sprite4200~4215 12fps 순환 + 상하 바운스
       const frames = DRAGONITE_MOTION.run;
       const fIdx = Math.floor(state.elapsed * 12) % frames.length;
       const fc = dragoniteFrames[frames[fIdx]];
       const bounce = Math.sin(state.elapsed * 12) * 1.5;
       if (fc) {
-        const dx = x - 26, dy = y - 40 + bounce;
-        ctx.save();
-        ctx.translate(dx + dw, dy);
-        ctx.scale(-1, 1);
-        ctx.drawImage(fc, 0, 0, fc.width, fc.height, 0, 0, dw, dh);
-        ctx.restore();
+        const rw = dw * 0.9 * powerScale, rh = dh * 0.9 * powerScale;
+        const rh0 = dh * 0.9;
+        ctx.drawImage(fc, 0, 0, fc.width, fc.height, x - 26, y - 40 + bounce + rh0 - rh, rw, rh);
       }
     }
 
