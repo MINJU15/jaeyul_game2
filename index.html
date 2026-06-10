@@ -255,7 +255,7 @@ bgm.volume = 0.45;
 
 function startBGM() {
   bgm.currentTime = 0;
-  bgm.play().catch(() => {});  // 브라우저 자동재생 정책 대비
+  bgm.play().catch(() => {});
 }
 function stopBGM() {
   bgm.pause();
@@ -267,6 +267,24 @@ function getAudioCtx() {
   if (audioCtx.state === 'suspended') audioCtx.resume();
   return audioCtx;
 }
+
+// iOS는 첫 터치에서 오디오를 명시적으로 잠금 해제해야 소리가 남
+let _iosAudioUnlocked = false;
+function _unlockIOSAudio() {
+  if (_iosAudioUnlocked) return;
+  _iosAudioUnlocked = true;
+  // AudioContext 잠금 해제
+  const ac = getAudioCtx();
+  const buf = ac.createBuffer(1, 1, 22050);
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  src.connect(ac.destination);
+  src.start(0);
+  // HTML Audio 잠금 해제
+  bgm.play().then(() => { if (state.mode !== 'PLAYING') bgm.pause(); }).catch(() => {});
+}
+document.addEventListener('touchstart', _unlockIOSAudio, { once: true });
+document.addEventListener('click',      _unlockIOSAudio, { once: true });
 
 function scheduleTone(ac, freq, type, startTime, duration, peakGain) {
   const osc  = ac.createOscillator();
