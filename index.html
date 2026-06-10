@@ -250,8 +250,14 @@ let audioCtx = null;
 
 // ── 배경음악 ──
 const bgm = new Audio('MUSIC/쿠키런_bgm1.mp3');
-bgm.loop   = true;
-bgm.volume = 0.45;
+bgm.loop    = true;
+bgm.volume  = 0.45;
+bgm.preload = 'auto';
+// iOS Safari: 인라인 재생 허용 (fullscreen 전환 방지)
+bgm.setAttribute('playsinline', '');
+bgm.setAttribute('webkit-playsinline', '');
+
+let _audioUnlocked = false;
 
 function startBGM() {
   bgm.currentTime = 0;
@@ -264,27 +270,37 @@ function stopBGM() {
 
 function getAudioCtx() {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
   return audioCtx;
 }
 
-// iOS는 첫 터치에서 오디오를 명시적으로 잠금 해제해야 소리가 남
-let _iosAudioUnlocked = false;
-function _unlockIOSAudio() {
-  if (_iosAudioUnlocked) return;
-  _iosAudioUnlocked = true;
-  // AudioContext 잠금 해제
-  const ac = getAudioCtx();
-  const buf = ac.createBuffer(1, 1, 22050);
-  const src = ac.createBufferSource();
-  src.buffer = buf;
-  src.connect(ac.destination);
-  src.start(0);
-  // HTML Audio 잠금 해제
-  bgm.play().then(() => { if (state.mode !== 'PLAYING') bgm.pause(); }).catch(() => {});
+// iOS: 첫 터치에서 AudioContext + HTML Audio 동시 잠금 해제
+// AudioContext.resume()은 Promise 반환 — resume 완료 후 silent buffer 실행
+function _unlockAudio() {
+  if (_audioUnlocked) return;
+  _audioUnlocked = true;
+
+  // AudioContext 생성 (반드시 user gesture 내에서)
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  audioCtx.resume().then(() => {
+    // resume 완료 후 무음 버퍼 → AudioContext 완전 활성화
+    const buf = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start(0);
+  });
+
+  // HTML Audio 잠금 해제: play()를 user gesture 내에서 호출해야 함
+  bgm.volume = 0;
+  bgm.play().then(() => {
+    bgm.pause();
+    bgm.currentTime = 0;
+    bgm.volume = 0.45;
+  }).catch(() => { bgm.volume = 0.45; });
 }
-document.addEventListener('touchstart', _unlockIOSAudio, { once: true });
-document.addEventListener('click',      _unlockIOSAudio, { once: true });
+document.addEventListener('touchstart', _unlockAudio, { once: true });
+document.addEventListener('click',      _unlockAudio, { once: true });
 
 function scheduleTone(ac, freq, type, startTime, duration, peakGain) {
   const osc  = ac.createOscillator();
